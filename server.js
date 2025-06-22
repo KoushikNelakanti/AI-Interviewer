@@ -1,33 +1,40 @@
-// server.js (Simplified for Vercel deployment)
+// server.js
 
-require('dotenv').config(); // Load environment variables (Vercel provides these differently)
+// Load environment variables from .env file (for local development)
+// Vercel handles these through its dashboard settings.
+require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
-const { WebSocketServer } = require('ws');
-const fetch = require('node-fetch');
-const path = require('path');
+const { WebSocketServer } = require('ws'); // For handling Deepgram WebSocket
+const fetch = require('node-fetch');     // For Gemini HTTP requests
+const path = require('path');            // Node.js built-in module for path manipulation
 
 const app = express();
-// Vercel sets process.env.PORT automatically
+// Vercel automatically sets process.env.PORT
+// For local development, it will use 3000 if PORT is not set in .env
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors()); // You might configure this more strictly in production if needed
-app.use(express.json());
+app.use(cors()); // Enable CORS for all routes (for development)
+app.use(express.json()); // For parsing JSON request bodies
 
+// --- Frontend Serving ---
+
+// Explicitly serve interviewer.html for the root route (e.g., when navigating to your Vercel URL)
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'interviewer.html'));
 });
-// Serve static files from the 'public' directory
+
+// Serve other static files (like CSS, images, client-side JS) from the 'public' directory
 app.use(express.static('public'));
 
 // --- API Endpoints for Gemini ---
-// (These routes remain the same as they correctly use server-side environment variables)
 
+// Endpoint to generate the first question
 app.post('/generate-first-question', async (req, res) => {
     const { jobRole } = req.body;
-    const geminiApiKey = process.env.GEMINI_API_KEY; // Vercel env var
+    const geminiApiKey = process.env.GEMINI_API_KEY;
 
     if (!geminiApiKey) {
         return res.status(500).json({ error: "Gemini API Key not configured on server." });
@@ -59,9 +66,10 @@ app.post('/generate-first-question', async (req, res) => {
     }
 });
 
+// Endpoint to get follow-up Gemini response
 app.post('/get-gemini-response', async (req, res) => {
     const { jobRole, conversationHistory } = req.body;
-    const geminiApiKey = process.env.GEMINI_API_KEY; // Vercel env var
+    const geminiApiKey = process.env.GEMINI_API_KEY;
 
     if (!geminiApiKey) {
         return res.status(500).json({ error: "Gemini API Key not configured on server." });
@@ -105,54 +113,76 @@ app.post('/get-gemini-response', async (req, res) => {
     }
 });
 
-// --- WebSocket Server for Deepgram Streaming (attached to HTTP server) ---
+// --- HTTP Server Setup ---
+// Start the Express HTTP server
 const server = app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
+    console.log(`Access your app at: http://localhost:${PORT} (for local) or your Vercel URL`);
 });
 
+
+// --- WebSocket Server for Deepgram Streaming (attached to the HTTP server) ---
 const wss = new WebSocketServer({ server, path: '/deepgram-ws' });
 
 wss.on('connection', function connection(ws) {
     console.log('Client connected to Deepgram WebSocket proxy.');
 
-    const deepgramApiKey = process.env.DEEPGRAM_API_KEY; // Vercel env var
+    const deepgramApiKey = process.env.DEEPGRAM_API_KEY;
     if (!deepgramApiKey) {
         console.error("Deepgram API Key not configured on server.");
-        ws.send(JSON.stringify({ error: "Deepgram API Key is missing on server." }));
+        ws.send(JSON.stringify({ error: "Deepgram API Key is missing on server. Check your Vercel Environment Variables." }));
         ws.close(1011, "API Key missing");
         return;
     }
 
-    const deepgramWsUrl = `wss://api.deepgram.com/v1/listen?smart_format=true&punctuate=true&encoding=opus&sample_rate=48000&interim_results=true&utterance_end_ms=1000`;
+    // Deepgram's real-time streaming API endpoint with specified model and parameters
+    const deepgramWsUrl = `wss://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&encoding=opus&sample_rate=48000&interim_results=true&utterance_end_ms=1000`;
+
+    // Create a new WebSocket connection to Deepgram's API
     const deepgramWs = new WebSocket(deepgramWsUrl, ['token', deepgramApiKey]);
 
-    deepgramWs.onopen = () => console.log('Connected to Deepgram API WebSocket.');
-    deepgramWs.onmessage = (message) => ws.send(message.data);
+    deepgramWs.onopen = () => {
+        console.log('Connected to Deepgram API WebSocket.');
+    };
+
+    deepgramWs.onmessage = (message) => {
+        // Forward Deepgram's transcription results back to the client
+        ws.send(message.data);
+    };
+
     deepgramWs.onclose = (event) => {
         console.log('Disconnected from Deepgram API WebSocket:', event.code, event.reason);
+        // If Deepgram closes, also close the client's connection to our proxy
         ws.close(event.code, event.reason);
     };
+
     deepgramWs.onerror = (error) => {
         console.error('Deepgram API WebSocket error:', error);
+        // Send an error message to the client and close the connection
+        ws.send(JSON.stringify({ error: "Deepgram API WebSocket error on server. See server logs." }));
         ws.close(1011, "Deepgram API error");
     };
 
     ws.onmessage = (message) => {
+        // Forward client's audio data (binary blob) to Deepgram
         if (deepgramWs.readyState === WebSocket.OPEN) {
             deepgramWs.send(message.data);
         } else {
-            console.warn("Deepgram WebSocket not open, dropping message.");
+            console.warn("Deepgram WebSocket not open (server to Deepgram), dropping message from client.");
         }
     };
 
     ws.onclose = (event) => {
         console.log('Client disconnected from Deepgram WebSocket proxy:', event.code, event.reason);
+        // If the client disconnects, close the connection to Deepgram
         if (deepgramWs.readyState === WebSocket.OPEN) {
             deepgramWs.close();
         }
     };
+
     ws.onerror = (error) => {
-        console.error('Client WebSocket error:', error);
+        console.error('Client WebSocket error (from browser to server):', error);
+        // If client WS has an error, ensure Deepgram WS is also closed
         if (deepgramWs.readyState === WebSocket.OPEN) {
             deepgramWs.close();
         }
