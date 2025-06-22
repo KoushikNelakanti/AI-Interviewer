@@ -6,6 +6,7 @@ const express = require('express');
 const cors = require('cors');
 const { WebSocketServer } = require('ws');
 const fetch = require('node-fetch');
+const path = require('path');
 
 const app = express();
 // Vercel sets process.env.PORT automatically
@@ -15,6 +16,9 @@ const PORT = process.env.PORT || 3000;
 app.use(cors()); // You might configure this more strictly in production if needed
 app.use(express.json());
 
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'interviewer.html'));
+});
 // Serve static files from the 'public' directory
 app.use(express.static('public'));
 
