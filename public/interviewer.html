@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Interviewer</title>
+  <style>
+    /* Reset and base styles */
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #e9f0f7;
+      padding: 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      color: #333;
+    }
+
+    /* Main container styling */
+    .container {
+      background: linear-gradient(145deg, #ffffff, #f0f0f0);
+      padding: 30px;
+      border-radius: 15px;
+      box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+      max-width: 700px;
+      width: 100%;
+      text-align: center;
+    }
+
+    /* Heading styling */
+    h1 {
+      color: #333;
+      margin-bottom: 25px;
+      font-size: 2em;
+    }
+
+    /* Transcript and AI Response display areas */
+    #transcript, #ai-response {
+      background: #fdfdfd;
+      padding: 20px;
+      border-radius: 10px;
+      margin: 15px 0;
+      min-height: 80px;
+      text-align: left;
+      border: 1px solid #ddd;
+      box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
+      overflow-y: auto; /* Allows scrolling for longer texts */
+      max-height: 200px; /* Limits the height */
+      line-height: 1.6;
+    }
+
+    #transcript i, #ai-response i {
+      color: #888; /* Styling for initial "waiting..." text */
+    }
+
+    /* Button and Input field base styles */
+    button, input[type="text"] {
+      padding: 12px 25px;
+      margin-top: 15px;
+      margin-right: 10px;
+      cursor: pointer;
+      border-radius: 8px;
+      border: none;
+      font-size: 1em;
+      transition: all 0.3s ease; /* Smooth transitions for hover/focus */
+    }
+
+    /* Button specific styles */
+    button {
+      background-color: #007bff;
+      color: white;
+      box-shadow: 0 4px 8px rgba(0, 123, 255, 0.2);
+    }
+
+    button:hover:not(:disabled) {
+      background-color: #0056b3;
+      transform: translateY(-2px); /* Slight lift on hover */
+      box-shadow: 0 6px 12px rgba(0, 123, 255, 0.3);
+    }
+
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+      box-shadow: none;
+      opacity: 0.7;
+    }
+
+    /* Input text field specific styles */
+    input[type="text"] {
+      width: calc(60% - 20px); /* Adjust width considering padding and margin */
+      border: 1px solid #ccc;
+      box-sizing: border-box; /* Include padding and border in the element's total width and height */
+      font-size: 1em;
+    }
+
+    input[type="text"]:focus {
+      border-color: #007bff;
+      box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+      outline: none; /* Remove default outline */
+    }
+
+    /* Button group for alignment */
+    .button-group {
+      display: flex;
+      flex-wrap: wrap; /* Allows buttons to wrap on smaller screens */
+      justify-content: center;
+      gap: 10px; /* Space between buttons */
+      margin-bottom: 20px; /* Space below button group */
+    }
+
+    /* Responsive adjustments */
+    @media (max-width: 600px) {
+      input[type="text"] {
+        width: 100%; /* Full width on small screens */
+        margin-right: 0;
+      }
+      .button-group button {
+        width: 100%; /* Full width for buttons too */
+        margin-right: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>AI Interviewer Platform</h1>
+
+    <input type="text" id="role-input" placeholder="Enter role description..." />
+    <div class="button-group">
+      <button id="begin-btn" disabled>📄 Generate First Question</button>
+      <button id="start-btn" disabled>🎤 Start Interview</button>
+    </div>
+
+    <div id="transcript">User: <i>Waiting for interaction...</i></div>
+    <div id="ai-response">AI: <i>Waiting for interaction...</i></div>
+  </div>
+
+  <script>
+    let mediaRecorder; // Global variable for MediaRecorder instance
+    let isRecording = false; // Flag to track recording state
+    let jobRole = ""; // Stores the job role entered by the user
+    let conversationHistory = []; // Stores turns for Gemini context (user and AI messages)
+    let deepgramSocket; // WebSocket instance for Deepgram real-time transcription
+
+    // Get references to DOM elements
+    const roleInput = document.getElementById("role-input");
+    const beginBtn = document.getElementById("begin-btn");
+    const startBtn = document.getElementById("start-btn");
+    const transcriptDiv = document.getElementById("transcript");
+    const aiResponseDiv = document.getElementById("ai-response");
+
+    // Define the URL of your Node.js backend server
+    // `location.protocol` will be 'https:' when running on HTTPS
+    // `location.host` will be 'localhost:3000' or similar
+    const SERVER_URL_BASE = `${location.protocol}//${location.host}`;
+    const WEBSOCKET_URL_BASE = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+
+    // Initialize button state: 'Generate First Question' is disabled until a role is entered
+    beginBtn.disabled = true;
+
+    // Event listener for the role input field
+    roleInput.addEventListener("input", () => {
+      jobRole = roleInput.value.trim();
+      beginBtn.disabled = jobRole === ""; // Enable 'Generate First Question' if jobRole is not empty
+    });
+
+    // Event handler for 'Generate First Question' button click
+    beginBtn.onclick = async () => {
+      if (!jobRole) {
+        alert("Please enter a role description first.");
+        return;
+      }
+      aiResponseDiv.innerHTML = `AI: Generating question...`;
+      beginBtn.disabled = true; // Disable this button while generating
+      startBtn.disabled = true; // Disable 'Start Interview' button
+
+      try {
+        const question = await generateFirstQuestion();
+        aiResponseDiv.innerHTML = `AI: ${question}`;
+        speak(question, () => {
+          // Callback after AI speech finishes
+          startBtn.disabled = false; // Enable 'Start Interview' button
+          beginBtn.disabled = jobRole === ""; // Re-enable 'Generate First Question' if role is present
+        });
+
+        // Add the AI's question to the conversation history
+        conversationHistory.push({ role: "model", parts: [{ text: question }] });
+      } catch (error) {
+        console.error("Error during question generation:", error);
+        aiResponseDiv.innerHTML = `AI: Sorry, an error occurred while generating the question.`;
+        alert("Failed to generate the first question. See console for details.");
+        startBtn.disabled = true; // Keep disabled if generation failed
+        beginBtn.disabled = false; // Allow user to try again
+      }
+    };
+
+    // Event handler for 'Start Interview' / 'Stop Recording' button click
+    startBtn.onclick = () => {
+      if (!isRecording) {
+        startBtn.textContent = "🛑 Stop Recording";
+        startBtn.disabled = true; // Disable button briefly while setting up recording
+        beginBtn.disabled = true; // Disable 'Generate First Question' while recording is active
+        startStreamingTranscription();
+      } else {
+        startBtn.textContent = "🎤 Start Interview";
+        stopStreamingTranscription();
+        beginBtn.disabled = jobRole === ""; // Re-enable 'Generate First Question'
+      }
+      isRecording = !isRecording; // Toggle recording state
+    };
+
+    /**
+     * Initializes media recording and connects to the Deepgram WebSocket proxy
+     * on the Node.js server for real-time transcription.
+     */
+    async function startStreamingTranscription() {
+      try {
+        // Request microphone access
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+        // Initialize MediaRecorder: using 'audio/webm; codecs=opus' for compatibility with Deepgram's opus encoding
+        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm; codecs=opus' });
+
+        // Establish WebSocket connection to our Node.js server's Deepgram proxy endpoint
+        deepgramSocket = new WebSocket(`${WEBSOCKET_URL_BASE}/deepgram-ws`);
+
+        // Event handler for when the WebSocket connection to our proxy is opened
+        deepgramSocket.onopen = () => {
+          console.log("Client connected to Deepgram WebSocket proxy.");
+          startBtn.disabled = false; // Re-enable 'Start Interview' button
+          mediaRecorder.start(250); // Start recording, sending data in 250ms chunks to WebSocket
+          transcriptDiv.innerHTML = `User: <i>Listening...</i>`;
+        };
+
+        // Event handler for messages received from the WebSocket proxy (Deepgram transcripts)
+        deepgramSocket.onmessage = async (event) => {
+          const data = JSON.parse(event.data);
+
+          // Handle potential errors from the proxy
+          if (data.error) {
+            console.error("Deepgram Proxy Error:", data.error);
+            alert(`Transcription Service Error: ${data.error}`);
+            stopStreamingTranscription(); // Stop recording and close socket on error
+            return;
+          }
+
+          // Update the transcript div with real-time (interim) results
+          if (data.channel?.alternatives?.[0]?.transcript) {
+            transcriptDiv.innerHTML = `User: ${data.channel.alternatives[0].transcript}`;
+          }
+
+          // When Deepgram sends a final transcription result for an utterance
+          if (data.is_final && data.channel?.alternatives?.[0]?.transcript) {
+            const finalTranscript = data.channel.alternatives[0].transcript;
+            console.log("Final transcript received:", finalTranscript);
+
+            if (finalTranscript.trim() !== "") {
+              // Add the user's final transcript to the conversation history
+              conversationHistory.push({ role: "user", parts: [{ text: finalTranscript }] });
+              aiResponseDiv.innerHTML = `AI: Thinking...`;
+              startBtn.disabled = true; // Disable recording button while AI processes and speaks
+
+              try {
+                const aiText = await getGeminiResponse();
+                aiResponseDiv.innerHTML = `AI: ${aiText}`;
+                speak(aiText, () => {
+                  // Callback after AI speech finishes
+                  startBtn.disabled = false; // Re-enable recording button
+                  transcriptDiv.innerHTML = `User: <i>Listening...</i>`; // Reset for next user input
+                });
+                // Add the AI's response to the conversation history
+                conversationHistory.push({ role: "model", parts: [{ text: aiText }] });
+              } catch (error) {
+                console.error("Error getting Gemini response:", error);
+                aiResponseDiv.innerHTML = `AI: Sorry, I couldn't generate a response. Please try again.`;
+                speak("Sorry, I couldn't generate a response. Please try again.", () => {
+                  startBtn.disabled = false;
+                  transcriptDiv.innerHTML = `User: <i>Listening...</i>`;
+                });
+              }
+            } else {
+              // If final transcript is empty (e.g., user just paused)
+              aiResponseDiv.innerHTML = `AI: I didn't catch that. Can you please repeat?`;
+              speak("I didn't catch that. Can you please repeat?", () => {
+                startBtn.disabled = false;
+                transcriptDiv.innerHTML = `User: <i>Listening...</i>`;
+              });
+            }
+          }
+        };
+
+        // Event handler for WebSocket connection closing
+        deepgramSocket.onclose = (event) => {
+          console.log("Client connection to Deepgram WebSocket proxy closed:", event.code, event.reason);
+          // Clean up MediaRecorder if it's still active
+          if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+          }
+          startBtn.disabled = false; // Re-enable button on close
+          transcriptDiv.innerHTML = `User: <i>Waiting for interaction...</i>`;
+          aiResponseDiv.innerHTML = `AI: <i>Waiting for interaction...</i>`;
+        };
+
+        // Event handler for WebSocket errors
+        deepgramSocket.onerror = (err) => {
+          console.error("Deepgram WebSocket proxy error:", err);
+          alert("Connection error to transcription service. See console for details.");
+          stopStreamingTranscription(); // Stop all processes on error
+          startBtn.disabled = false; // Re-enable button
+        };
+
+        // Event handler for MediaRecorder sending data chunks
+        mediaRecorder.ondataavailable = (e) => {
+          // Only send data if there's data and the WebSocket is open
+          if (e.data.size > 0 && deepgramSocket.readyState === WebSocket.OPEN) {
+            deepgramSocket.send(e.data); // Send audio chunks directly to our proxy server
+          }
+        };
+
+        // Event handler for MediaRecorder stopping
+        mediaRecorder.onstop = () => {
+          console.log("MediaRecorder stopped.");
+          // If MediaRecorder stops, ensure our client-side WebSocket is also closed
+          if (deepgramSocket && deepgramSocket.readyState === WebSocket.OPEN) {
+            deepgramSocket.close();
+          }
+        };
+
+      } catch (error) {
+        console.error("Error accessing microphone or setting up Deepgram proxy:", error);
+        alert("Could not access microphone. Please ensure permissions are granted and you are on a secure (HTTPS) connection.");
+        startBtn.textContent = "🎤 Start Interview";
+        isRecording = false; // Reset recording state
+        startBtn.disabled = false; // Ensure button is re-enabled
+      }
+    }
+
+    /**
+     * Stops the audio recording and closes the Deepgram WebSocket connection.
+     */
+    function stopStreamingTranscription() {
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+      }
+      if (deepgramSocket && deepgramSocket.readyState === WebSocket.OPEN) {
+        deepgramSocket.close(); // Close the WebSocket connection
+      }
+      // Reset UI state messages
+      transcriptDiv.innerHTML = `User: <i>Waiting for interaction...</i>`;
+      aiResponseDiv.innerHTML = `AI: <i>Waiting for interaction...</i>`;
+    }
+
+    /**
+     * Calls the Node.js backend to generate the first interview question using Google Gemini.
+     */
+    async function generateFirstQuestion() {
+      try {
+        const response = await fetch(`${SERVER_URL_BASE}/generate-first-question`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobRole }) // Send jobRole to the server
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            console.error("Server API Error (generateFirstQuestion):", data.error);
+            throw new Error(data.error || "Failed to generate question from server.");
+        }
+        return data.question; // Server sends back the generated question
+      } catch (error) {
+        console.error("Error fetching first question from server:", error);
+        throw new Error("Error communicating with the server to generate the first question.");
+      }
+    }
+
+    /**
+     * Calls the Node.js backend to get a follow-up response from Google Gemini
+     * based on the ongoing conversation history.
+     */
+    async function getGeminiResponse() {
+      try {
+        const response = await fetch(`${SERVER_URL_BASE}/get-gemini-response`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobRole, conversationHistory }) // Send jobRole and full conversation history
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            console.error("Server API Error (getGeminiResponse):", data.error);
+            throw new Error(data.error || "Failed to get Gemini response from server.");
+        }
+        return data.response; // Server sends back Gemini's response
+      } catch (error) {
+        console.error("Error fetching Gemini response from server:", error);
+        throw new Error("Error communicating with the server to get AI response.");
+      }
+    }
+
+    /**
+     * Uses the Web SpeechSynthesis API to speak the given text.
+     * Includes a callback that fires when speech finishes.
+     * @param {string} text - The text to speak.
+     * @param {function} [onEndCallback] - Optional callback function to execute when speech finishes.
+     */
+    function speak(text, onEndCallback = () => {}) {
+      if ('speechSynthesis' in window) {
+        // Ensure the speech queue is clear before speaking
+        window.speechSynthesis.cancel(); 
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'en-US';
+        utterance.onend = () => {
+          console.log("AI speech finished.");
+          onEndCallback(); // Execute the provided callback
+        };
+        utterance.onerror = (event) => {
+          console.error('SpeechSynthesisUtterance.onerror', event);
+          alert("Error speaking. Your browser might have issues with speech synthesis.");
+          onEndCallback(); // Call callback even on error to unblock UI
+        };
+        window.speechSynthesis.speak(utterance);
+      } else {
+        console.warn("Speech Synthesis API not supported in this browser. Please use a modern browser.");
+        alert("Speech Synthesis not supported. Please use Chrome, Firefox, Edge, or Safari for voice output.");
+        onEndCallback(); // Call callback immediately if not supported
+      }
+    }
+  </script>
+</body>
+</html>
