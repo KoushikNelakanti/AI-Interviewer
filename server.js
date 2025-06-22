@@ -24,7 +24,6 @@ app.use(express.static(join(__dirname, 'public'))); // Serve frontend if needed
 const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
 
 app.get('/', (req, res) => {
-  res.send('🧠 Deepgram AI Interviewer is running. Use /start-agent to begin.');
   res.sendFile(join(__dirname, 'public', 'interviewer.html'));
 });
 
