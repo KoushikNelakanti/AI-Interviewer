@@ -1,39 +1,56 @@
-// server.js
-require("dotenv").config();
-const express = require("express");
-const cors = require("cors");
-const { writeFile, appendFile } = require("fs/promises");
-const { createClient, AgentEvents } = require("@deepgram/sdk");
-const fetch = require("cross-fetch");
-const { join } = require("path");
-const path = require("path");
+// server.js (ES Module format)
+
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import fetch from 'cross-fetch';
+import { createClient, AgentEvents } from '@deepgram/sdk';
+import { writeFile, appendFile } from 'fs/promises';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+// ESM workaround for __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static("public"));
+app.use(express.static(join(__dirname, 'public'))); // Serve frontend if needed
 
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "interviewer.html"));
-});
-
+// Deepgram setup
 const deepgram = createClient(process.env.DEEPGRAM_API_KEY);
 
-app.get("/start-agent", async (req, res) => {
-  await agent();
-  res.send("Agent started. Check terminal logs.");
+app.get('/', (req, res) => {
+  res.send('🧠 Deepgram AI Interviewer is running. Use /start-agent to begin.');
 });
 
-const agent = async () => {
+app.get('/start-agent', async (req, res) => {
+  try {
+    startAgent();
+    res.json({ status: 'Deepgram Voice Agent started successfully.' });
+  } catch (error) {
+    console.error('Failed to start Deepgram agent:', error);
+    res.status(500).json({ error: 'Failed to start agent.' });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`✅ Server running at http://localhost:${PORT}`);
+});
+
+// Deepgram Agent function
+const startAgent = async () => {
   let audioBuffer = Buffer.alloc(0);
-  let i = 0;
-  const url = "https://dpgr.am/spacewalk.wav";
+  let fileIndex = 0;
+  const url = "https://dpgr.am/spacewalk.wav"; // Sample audio or replace with your source
+
   const connection = deepgram.agent();
 
   connection.on(AgentEvents.Welcome, () => {
-    console.log("Welcome to the Deepgram Voice Agent!");
+    console.log('👋 Welcome to Deepgram Voice Agent');
 
     connection.configure({
       audio: {
@@ -60,7 +77,7 @@ const agent = async () => {
             type: "open_ai",
             model: "gpt-4o-mini",
           },
-          prompt: "You are a friendly AI assistant.",
+          prompt: "You are a professional and friendly AI interviewer. Ask relevant questions and give feedback.",
         },
         speak: {
           provider: {
@@ -68,75 +85,67 @@ const agent = async () => {
             model: "aura-2-thalia-en",
           },
         },
-        greeting: "Hello! How can I help you today?",
+        greeting: "Hi there! I'm your AI interviewer. Let's get started!",
       },
     });
 
-    console.log("Deepgram agent configured!");
-
-    setInterval(() => {
-      console.log("Keep alive!");
-      connection.keepAlive();
-    }, 5000);
+    setInterval(() => connection.keepAlive(), 5000);
 
     fetch(url)
       .then((r) => r.body)
       .then((res) => {
         res.on("readable", () => {
-          console.log("Sending audio chunk");
-          connection.send(res.read());
+          const chunk = res.read();
+          if (chunk) {
+            connection.send(chunk);
+            console.log("📡 Sending audio chunk");
+          }
         });
       });
   });
 
   connection.on(AgentEvents.Open, () => {
-    console.log("Connection opened");
-  });
-
-  connection.on(AgentEvents.Close, () => {
-    console.log("Connection closed");
-    process.exit(0);
+    console.log("🔗 Connection to Deepgram opened");
   });
 
   connection.on(AgentEvents.ConversationText, async (data) => {
-    await appendFile(join(__dirname, `chatlog.txt`), JSON.stringify(data) + "\n");
+    await appendFile(join(__dirname, 'chatlog.txt'), JSON.stringify(data) + "\n");
+    console.log("💬 Logged conversation text");
+  });
+
+  connection.on(AgentEvents.Audio, (data) => {
+    audioBuffer = Buffer.concat([audioBuffer, Buffer.from(data)]);
+  });
+
+  connection.on(AgentEvents.AgentAudioDone, async () => {
+    const filePath = join(__dirname, `output-${fileIndex}.wav`);
+    await writeFile(filePath, audioBuffer);
+    console.log(`✅ Audio saved to ${filePath}`);
+    audioBuffer = Buffer.alloc(0);
+    fileIndex++;
+  });
+
+  connection.on(AgentEvents.Close, () => {
+    console.log("❌ Connection to Deepgram closed");
+  });
+
+  connection.on(AgentEvents.Error, (err) => {
+    console.error("❌ Deepgram Agent Error:", err);
+  });
+
+  connection.on(AgentEvents.Unhandled, (data) => {
+    console.log("🔍 Unhandled event:");
+    console.dir(data, { depth: null });
   });
 
   connection.on(AgentEvents.UserStartedSpeaking, () => {
-    if (audioBuffer.length) {
-      console.log("Interrupting agent.");
+    if (audioBuffer.length > 0) {
+      console.log("⚠️ User interrupted agent");
       audioBuffer = Buffer.alloc(0);
     }
   });
 
-  connection.on(AgentEvents.Metadata, (data) => {
-    console.dir(data, { depth: null });
-  });
-
-  connection.on(AgentEvents.Audio, (data) => {
-    console.log("Audio chunk received");
-    const buffer = Buffer.from(data);
-    audioBuffer = Buffer.concat([audioBuffer, buffer]);
-  });
-
-  connection.on(AgentEvents.Error, (err) => {
-    console.error("Error!");
-    console.error(JSON.stringify(err, null, 2));
-    console.error(err.message);
-  });
-
-  connection.on(AgentEvents.AgentAudioDone, async () => {
-    console.log("Agent audio done");
-    await writeFile(join(__dirname, `output-${i}.wav`), audioBuffer);
-    audioBuffer = Buffer.alloc(0);
-    i++;
-  });
-
-  connection.on(AgentEvents.Unhandled, (data) => {
-    console.dir(data, { depth: null });
+  connection.on(AgentEvents.Metadata, (meta) => {
+    console.log("📊 Metadata received:", meta);
   });
 };
-
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-});
