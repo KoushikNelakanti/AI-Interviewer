@@ -1,49 +1,34 @@
 // server.js
 
-// Load environment variables from .env file (for local development)
-// Vercel handles these through its dashboard settings.
 require('dotenv').config();
-
 const express = require('express');
 const cors = require('cors');
-const { WebSocketServer } = require('ws'); // For handling Deepgram WebSocket
-const fetch = require('node-fetch');     // For Gemini HTTP requests
-const path = require('path');            // Node.js built-in module for path manipulation
+const { WebSocketServer } = require('ws');
+const WebSocket = require('ws'); // Needed to connect to Deepgram
+const fetch = require('node-fetch');
+const path = require('path');
 
 const app = express();
-// Vercel automatically sets process.env.PORT
-// For local development, it will use 3000 if PORT is not set in .env
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(cors()); // Enable CORS for all routes (for development)
-app.use(express.json()); // For parsing JSON request bodies
+app.use(cors());
+app.use(express.json());
 
-// --- Frontend Serving ---
-
-// Explicitly serve interviewer.html for the root route (e.g., when navigating to your Vercel URL)
+// Serve Frontend
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'interviewer.html'));
 });
-
-// Serve other static files (like CSS, images, client-side JS) from the 'public' directory
 app.use(express.static('public'));
 
-// --- API Endpoints for Gemini ---
-
-// Endpoint to generate the first question
+// --- Gemini API: First Question ---
 app.post('/generate-first-question', async (req, res) => {
     const { jobRole } = req.body;
     const geminiApiKey = process.env.GEMINI_API_KEY;
 
-    if (!geminiApiKey) {
-        return res.status(500).json({ error: "Gemini API Key not configured on server." });
-    }
-    if (!jobRole) {
-        return res.status(400).json({ error: "Job role is required." });
-    }
+    if (!geminiApiKey) return res.status(500).json({ error: "Gemini API Key not configured." });
+    if (!jobRole) return res.status(400).json({ error: "Job role is required." });
 
-    const prompt = `You are a professional technical interviewer. Your goal is to conduct a concise and effective interview. Ask the first technical interview question for a candidate applying to the following role: '${jobRole}'. Focus on a fundamental concept relevant to the role.`;
+    const prompt = `You are a professional technical interviewer. Ask the first technical interview question for the role: '${jobRole}'.`;
 
     try {
         const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`, {
@@ -53,34 +38,27 @@ app.post('/generate-first-question', async (req, res) => {
         });
 
         const data = await response.json();
-        if (!response.ok) {
-            console.error("Gemini API error:", data);
-            return res.status(response.status).json({ error: data.error?.message || "Failed to generate question from Gemini." });
-        }
-
-        res.json({ question: data.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't generate a question." });
-
+        const question = data.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't generate a question.";
+        res.json({ question });
     } catch (error) {
-        console.error("Error generating first question:", error);
-        res.status(500).json({ error: "Internal server error while generating question." });
+        console.error("Gemini error:", error);
+        res.status(500).json({ error: "Failed to generate question." });
     }
 });
 
-// Endpoint to get follow-up Gemini response
+// --- Gemini API: Follow-up Responses ---
 app.post('/get-gemini-response', async (req, res) => {
     const { jobRole, conversationHistory } = req.body;
     const geminiApiKey = process.env.GEMINI_API_KEY;
 
-    if (!geminiApiKey) {
-        return res.status(500).json({ error: "Gemini API Key not configured on server." });
-    }
-    if (!jobRole || !conversationHistory) {
-        return res.status(400).json({ error: "Job role and conversation history are required." });
-    }
+    if (!geminiApiKey) return res.status(500).json({ error: "Gemini API Key not configured." });
+    if (!jobRole || !conversationHistory) return res.status(400).json({ error: "Missing job role or conversation history." });
 
     const systemInstruction = {
         role: "user",
-        parts: [{ text: `You are an AI interviewer for the role: '${jobRole}'. Your current task is to provide a concise, professional follow-up question or feedback based on the candidate's last response. If the candidate's answer is sufficient, ask the next relevant technical question. If it's unclear or incomplete, ask for clarification. Keep responses interview-appropriate.` }]
+        parts: [{
+            text: `You are an AI interviewer for the role '${jobRole}'. Ask technical follow-up questions or give feedback based on the candidate's answers.`
+        }]
     };
 
     const fullConversation = [systemInstruction, ...conversationHistory];
@@ -91,100 +69,97 @@ app.post('/get-gemini-response', async (req, res) => {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 contents: fullConversation,
-                generationConfig: {
-                    temperature: 0.7,
-                    topP: 0.95,
-                    topK: 40,
-                },
+                generationConfig: { temperature: 0.7, topP: 0.95, topK: 40 }
             })
         });
 
         const data = await response.json();
-        if (!response.ok) {
-            console.error("Gemini API error:", data);
-            return res.status(response.status).json({ error: data.error?.message || "Failed to get Gemini response." });
-        }
-
-        res.json({ response: data.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I didn't catch that or couldn't generate a response." });
-
+        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, no response generated.";
+        res.json({ response: reply });
     } catch (error) {
-        console.error("Error getting Gemini response:", error);
-        res.status(500).json({ error: "Internal server error while getting Gemini response." });
+        console.error("Gemini follow-up error:", error);
+        res.status(500).json({ error: "Failed to get follow-up response." });
     }
 });
 
 // --- HTTP Server Setup ---
-// Start the Express HTTP server
 const server = app.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
-    console.log(`Access your app at: http://localhost:${PORT} (for local) or your Vercel URL`);
+    console.log(`Server listening on http://localhost:${PORT}`);
 });
 
-
-// --- WebSocket Server for Deepgram Streaming (attached to the HTTP server) ---
+// --- WebSocket: Deepgram AI Voice Agent ---
 const wss = new WebSocketServer({ server, path: '/deepgram-ws' });
 
-wss.on('connection', function connection(ws) {
-    console.log('Client connected to Deepgram WebSocket proxy.');
+wss.on('connection', (clientWs) => {
+    console.log("Client connected to Deepgram agent proxy.");
 
     const deepgramApiKey = process.env.DEEPGRAM_API_KEY;
     if (!deepgramApiKey) {
-        console.error("Deepgram API Key not configured on server.");
-        ws.send(JSON.stringify({ error: "Deepgram API Key is missing on server. Check your Vercel Environment Variables." }));
-        ws.close(1011, "API Key missing");
+        console.error("Deepgram API key missing.");
+        clientWs.send(JSON.stringify({ error: "Missing Deepgram API Key" }));
+        clientWs.close(1011, "API Key required");
         return;
     }
 
-    // Deepgram's real-time streaming API endpoint with specified model and parameters
-    const deepgramWsUrl = `wss://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&punctuate=true&encoding=opus&sample_rate=48000&interim_results=true&utterance_end_ms=1000`;
+    // Connect to Deepgram AI Voice Agent WebSocket
+    const dgUrl = `wss://api.deepgram.com/v1/agents?encoding=opus&sample_rate=48000`;
+    const dgWs = new WebSocket(dgUrl, {
+        headers: { Authorization: `Token ${deepgramApiKey}` }
+    });
 
-    // Create a new WebSocket connection to Deepgram's API
-    const deepgramWs = new WebSocket(deepgramWsUrl, ['token', deepgramApiKey]);
+    dgWs.on('open', () => {
+        console.log("Connected to Deepgram AI Agent WebSocket.");
 
-    deepgramWs.onopen = () => {
-        console.log('Connected to Deepgram API WebSocket.');
-    };
+        // Send agent config (IMPORTANT)
+        dgWs.send(JSON.stringify({
+            config: {
+                agent: { name: "basic-agent" }, // Use "basic-agent" or your custom one
+                tts: {
+                    provider: "deepgram",
+                    voice: "aura-asteria-en" // You can choose other voices too
+                },
+                asr: {
+                    model: "nova-3"
+                },
+                vad_events: true
+            }
+        }));
+    });
 
-    deepgramWs.onmessage = (message) => {
-        // Forward Deepgram's transcription results back to the client
-        ws.send(message.data);
-    };
+    dgWs.on('message', (msg) => {
+        // Forward Deepgram's response to the frontend
+        clientWs.send(msg);
+    });
 
-    deepgramWs.onclose = (event) => {
-        console.log('Disconnected from Deepgram API WebSocket:', event.code, event.reason);
-        // If Deepgram closes, also close the client's connection to our proxy
-        ws.close(event.code, event.reason);
-    };
+    dgWs.on('close', (code, reason) => {
+        console.log("Deepgram Agent WebSocket closed:", code, reason);
+        clientWs.close(code, reason);
+    });
 
-    deepgramWs.onerror = (error) => {
-        console.error('Deepgram API WebSocket error:', error);
-        // Send an error message to the client and close the connection
-        ws.send(JSON.stringify({ error: "Deepgram API WebSocket error on server. See server logs." }));
-        ws.close(1011, "Deepgram API error");
-    };
+    dgWs.on('error', (err) => {
+        console.error("Deepgram Agent WebSocket error:", err);
+        clientWs.send(JSON.stringify({ error: "Deepgram WebSocket error" }));
+        clientWs.close(1011, "Deepgram error");
+    });
 
-    ws.onmessage = (message) => {
-        // Forward client's audio data (binary blob) to Deepgram
-        if (deepgramWs.readyState === WebSocket.OPEN) {
-            deepgramWs.send(message.data);
-        } else {
-            console.warn("Deepgram WebSocket not open (server to Deepgram), dropping message from client.");
+    clientWs.on('message', (msg) => {
+        // Forward client's microphone audio to Deepgram
+        if (dgWs.readyState === WebSocket.OPEN) {
+            dgWs.send(msg);
         }
-    };
+    });
 
-    ws.onclose = (event) => {
-        console.log('Client disconnected from Deepgram WebSocket proxy:', event.code, event.reason);
-        // If the client disconnects, close the connection to Deepgram
-        if (deepgramWs.readyState === WebSocket.OPEN) {
-            deepgramWs.close();
+    clientWs.on('close', (code, reason) => {
+        console.log("Client WebSocket closed:", code, reason);
+        if (dgWs.readyState === WebSocket.OPEN) {
+            dgWs.close();
         }
-    };
+    });
 
-    ws.onerror = (error) => {
-        console.error('Client WebSocket error (from browser to server):', error);
-        // If client WS has an error, ensure Deepgram WS is also closed
-        if (deepgramWs.readyState === WebSocket.OPEN) {
-            deepgramWs.close();
+    clientWs.on('error', (err) => {
+        console.error("Client WebSocket error:", err);
+        if (dgWs.readyState === WebSocket.OPEN) {
+            dgWs.close();
         }
-    };
+    });
 });
