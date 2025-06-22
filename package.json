@@ -1,27 +1,26 @@
 {
-  "name": "ai-interviewer-app",
+  "name": "deepgram-ai-interviewer",
   "version": "1.0.0",
-  "description": "An AI Interviewer platform using Deepgram and Google Gemini APIs with a Node.js backend.",
+  "description": "AI Interviewer using Deepgram Voice Agent and Gemini",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": [
-    "ai",
-    "interviewer",
-    "deepgram",
-    "gemini",
-    "nodejs",
-    "websocket",
-    "real-time"
-  ],
-  "author": "Your Name Here",
-  "license": "ISC",
+  "type": "module",
   "dependencies": {
+    "@deepgram/sdk": "^3.0.1",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "node-fetch": "^2.7.0",
-    "ws": "^8.17.0"
-  }
+    "cross-fetch": "^4.0.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2"
+  },
+  "keywords": [
+    "deepgram",
+    "ai",
+    "voice-agent",
+    "gemini",
+    "interviewer"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
 }
